@@ -1,0 +1,27 @@
+# direct
+D1: @{
+    D1 Char<b>
+    Char<a>
+}
+'D1' print(D1)
+
+# indirect 1: currently not working, see issue #95 for details
+I1: @{
+    I1? Char<a>
+}
+'I1' print(I1)
+
+# indirect 2: currently not working, see issue #95 for details
+X: Y 'c'
+Y: Z 'b'
+Z: X | Y | Char<a>
+'I2' print(Z)
+
+#---
+#D1abbb
+#I1aaaa
+#I2abbcb
+#---
+#((("a", "b"), "b"), "b")
+#a
+#a

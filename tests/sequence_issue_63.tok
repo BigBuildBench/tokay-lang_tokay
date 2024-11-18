@@ -1,0 +1,12 @@
+# issue 63
+
+f : if x == 2 1 else 2
+
+x = 2
+print(f)
+x = 1
+print(f)
+
+#---
+#1
+#2

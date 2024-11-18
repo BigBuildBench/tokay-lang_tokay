@@ -1,0 +1,420 @@
+# The Tokay programming language
+# Copyright © 2023 by Jan Max Meyer, Phorward Software Technologies.
+# Licensed under the MIT license. See LICENSE for more information.
+#
+# This Tokay program expresses Tokay's grammar in itself.
+# It is used to modify and build Tokays own language parser.
+#
+# See `build/README.md` for details.
+#
+
+#ExpectAndRecover : @<P> msg=void {
+#    accept P
+#    print(msg || "Expecting " + *P + ", but got " + repr(Peek<(Token | Char | "end-of-file")>)) Char<^\n;>*
+#}
+
+# Whitespace & EOL
+
+_ : @{  # true whitespace is made of comments and escaped line-breaks as well
+    Char<\t >+
+    '#' Char<^\n>*
+    '\\' '\r'? '\n'
+}
+
+___ : (T_EOL _)*  # optional line-breaks followed by whitespace
+
+T_EOL : @{
+    '\n' _
+    '\r' '\n'? _
+    ';' _
+    accept Peek<'}'>
+    accept Peek<EOF>
+}
+
+# Prime Tokens
+
+T_OctDigit : Char<0-7>
+
+T_HexDigit : Char<0-9A-Fa-f>
+
+T_EscapeSequence : @{
+    # Named escape sequences
+    'a'  "\x07"
+    'b'  "\x08"
+    'f'  "\x0c"
+    'n'  "\n"
+    'r'  "\r"
+    't'  "\t"
+    'v'  "\x0b"
+
+    # Encoded escape sequences
+    # fixme: This can be resolved better as soon as the Repeat generic builtin is ready
+
+    # ASCII Octal (8-Bit)
+    T_OctDigit T_OctDigit T_OctDigit  chr(int($1) * 64 + int($2) * 8 + int($3))
+
+    # ASCII Hex (8-Bit)
+    'x' T_HexDigit T_HexDigit chr(int("0x" + $0.substr(1)))
+
+    # Unicode (32-Bit)
+    'u' T_HexDigit T_HexDigit T_HexDigit T_HexDigit  chr(int("0x" + $0.substr(1)))
+
+    # Unicode (64-Bit)
+    'U' T_HexDigit T_HexDigit T_HexDigit T_HexDigit \
+        T_HexDigit T_HexDigit T_HexDigit T_HexDigit \
+        chr(int("0x" + $0.substr(1)))
+
+    # fixme: In case when odd amount of digits is provided, a syntax error shall occur.
+    #        This is like in Python: "\x2" SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 0-2: truncated \xXX escape
+
+    Char
+}
+
+T_Identifier : @{
+    ast("identifier", Ident)
+}
+
+T_Consumable : @{
+    Char<A-Z_> Char<0-9A-Z_a-z>*  ast("identifier", $0)
+}
+
+T_Alias : @{
+    Char<A-Z_a-z> Char<0-9A-Z_a-z>*  ast("value_string", $0)
+}
+
+T_String : @{
+    '"' {
+        '\\' T_EscapeSequence
+        Char<^\\\">
+        EOF  error("Unclosed string, expecting '\"'")
+    }*  str_join("", $2) Expect<'"'>
+}
+
+T_Touch : @{
+    '\'' {
+        '\\' T_EscapeSequence
+        Char<^\\\'>
+        EOF  error("Unclosed match, expecting '\''")
+    }*  str_join("", $2) Expect<'\''>
+}
+
+T_Integer : @{
+    ast("value_integer", Int)
+}
+
+T_Float : @{
+    ast("value_float", Float)
+}
+
+# Character-classes
+
+CclChar : @{
+    '\\' T_EscapeSequence
+    Char<^\>>
+    EOF  error("Unclosed character-class, expecting ']'")
+}
+
+CclRange : @{
+    CclChar '-' CclChar  ast("range", $1 + $3)
+    CclChar  ast("char")
+}
+
+Ccl : @{
+    '^' CclRange*  ast("ccl_neg")
+    CclRange*  ast("ccl")
+}
+
+# Statics, Variables, Loads
+
+Subscript : @{
+    '[' _ Expression ']' _  ast("item")
+}
+
+Attribute : @{
+    '.' _ T_Alias  ast("attribute")
+}
+
+Capture : @{
+    '$' T_Alias _  ast("capture_alias")
+    '$' T_Integer _  ast("capture_index")
+    '$' '(' _ ___ Expression ')' _  ast("capture_expr")
+    '$'  error("'$...': Expecting identifier, integer or (expression)")
+}
+
+Variable : @{
+    T_Identifier
+    Capture
+}
+
+Lvalue : @{
+    Variable _ Subscript* ast("lvalue")  # Lvalue currently doesn't allow attribute assignment!
+}
+
+Load : @{
+    Lvalue '++'  ast("inplace_post_inc")
+    Lvalue '--'  ast("inplace_post_dec")
+    '++' Expect<Lvalue>  ast("inplace_pre_inc")
+    '--' Expect<Lvalue>  ast("inplace_pre_dec")
+    Variable
+}
+
+# Parselet
+
+Parselet : @{
+    '@' _ ParseletGenerics? _ ParseletArguments? Expect<Block("body")>  ast("value_parselet")
+}
+
+## Parselet: Generics
+
+ParseletGeneric : @{
+    T_Identifier _ (':' _ Expect<Atomic>)?  ast("gen")
+}
+
+ParseletGenerics : @{
+    '<' _ ___ (ParseletGeneric ___ (',' _ ___)?)* ___ Expect<'>'> _ ___
+}
+
+## Parselet: Arguments
+
+ParseletArgument : @{
+    T_Identifier _ ('=' _ Expect<Expression>)?  ast("sig")
+}
+
+ParseletArguments : @{
+    (ParseletArgument (',' _)?)+
+}
+
+# Parselet: Instance
+
+StaticParseletInstance : T_Consumable | Parselet
+
+ParseletInstanceArgument : @{
+    T_Identifier _ ':' _ Expect<Atomic> _  ast("instarg_named")
+    Atomic _  ast("instarg")
+}
+
+ParseletInstance : @{
+    StaticParseletInstance '<' _ (ParseletInstanceArgument (',' _)?)+ _ Expect<'>'>  ast("value_instance")
+    StaticParseletInstance
+}
+
+# Inlined stuff - here comes everything which happens in brackets (...)
+
+InlineAssignment : Assignment<Expression>("copy")
+
+InlineSequenceItem : @{
+    T_Alias _ '=>' _ Expect<InlineAssignment>  ast("alias")
+    LogicalOr '=>' _ Expect<InlineAssignment>  ast("alias")
+    InlineAssignment
+}
+
+InlineSequence : @{
+    (InlineSequenceItem ___)+  if type($1) == "list" && $1.len > 1 || $1["emit"] == "alias" ast("sequence")
+}
+
+InlineSequences : @{
+    InlineSequence (___ '|' _ ___ Expect<InlineSequence>)+  ast("block")
+    InlineSequence
+}
+
+InlineList : @{
+    InlineAssignment ___ (',' _ InlineAssignment ___)+ (',' _)? ___  ast("list")
+    InlineAssignment? ___ (',' _) ___  ast("list")
+}
+
+# Call parameters (used by calls and rvalues)
+
+CallArgument : @{
+    T_Identifier _ '=' Not<Char<\>=>> _ Expect<InlineSequences>  ast("callarg_named")
+    InlineSequences  ast("callarg")
+}
+
+CallArguments : @{
+    CallArgument + Repeat<((',' _) ___ CallArgument), min:0, blur:false> (',' _)? ___
+    # List<CallArgument, Separator: ((',' _)? ___)>  # Stack overflow :-(
+}
+
+# Token
+
+TokenLiteral : @{
+    '\'' T_Touch '\''  ast("value_token_match")
+    T_Touch  ast("value_token_touch")
+    Keyword<'Chars'> '<' Ccl '>'  ast("value_token_ccls")
+    Keyword<'Chars'>  ast("value_token_anys")
+    Keyword<'Char'> '<' Ccl '>'  ast("value_token_ccl")
+    Keyword<'Char'>  ast("value_token_any")
+    Keyword<'Void'>  ast("value_token_void")
+}
+
+Token : @{
+    '(' _ ___ ')'  ast("dict")  # defines an empty dict
+    '(' _ ___ (InlineList | InlineSequences) ___ Expect<')'>
+    '@' _ '(' _ ___ (InlineList | InlineSequences) ___ Expect<')'>  ast("area")
+    Block
+    TokenLiteral
+    ParseletInstance '(' _ ___ CallArguments? ___ Expect<')'>  ast("call")
+    ParseletInstance
+}
+
+TokenModifier : @{
+    Token '+'  ast("op_mod_pos")
+    Token '*'  ast("op_mod_kle")
+    Token '?'  ast("op_mod_opt")
+    Token
+}
+
+# Expression & Flow
+
+## Literals
+
+Literal : @{
+    Keyword<'true'> _  ast("value_true")
+    Keyword<'false'> _  ast("value_false")
+    Keyword<'void'> _  ast("value_void")
+    Keyword<'null'> _  ast("value_null")
+    T_String  ast("value_string")
+    T_Float
+    T_Integer
+}
+
+## Atomic elements, including if and loops as they are atomic part of expressions
+
+Atomic : @{
+    Literal
+    TokenModifier
+    Keyword<'if'> _ Expect<Expression> ___ Expect<Statement> \
+        (___ Keyword<'else'> _ ___ Expect<Statement>)?  ast("op_if")
+    Keyword<'for'> _ Expect<Lvalue> Keyword<Expect<'in'>> _ Expect<Expression> \
+         ___ Expect<Statement>  ast("op_for")
+    Keyword<'loop'> _ Expression ___ Block  ast("op_loop")
+    Keyword<'loop'> _ Expect<Block>  ast("op_loop")
+    Load
+}
+
+# Rvalue can be a function call or value attribute/subscript
+
+Rvalue : @{
+    Rvalue '(' _ ___ CallArguments? Expect<')'>  ast("call")
+    Rvalue (Attribute | Subscript)*  ast("rvalue")
+    Atomic
+}
+
+# Expressional syntax
+
+Unary : @{
+    '-' Not<'-'> _ Unary  ast("op_unary_neg")
+    '!' _ Unary  ast("op_unary_not")
+    '*' _ Unary  ast("op_deref")
+    Rvalue _
+}
+
+MulDiv : @{
+    MulDiv '*' Not<Char<=>> _ Expect<Unary>  ast("op_binary_mul")
+    MulDiv '//' Not<Char<=>> _ Expect<Unary>  ast("op_binary_divi")
+    MulDiv '/' Not<Char<=>> _ Expect<Unary>  ast("op_binary_div")
+    MulDiv '%' Not<Char<=>> _ Expect<Unary>  ast("op_binary_mod")
+    Unary
+}
+
+AddSub : @{
+    AddSub '+' Not<Char<+=>> _ Expect<MulDiv>  ast("op_binary_add")
+    AddSub '-' Not<Char<-=>> _ Expect<MulDiv>  ast("op_binary_sub")
+    MulDiv
+}
+
+Comparison : @{
+    AddSub {
+        '==' _ Expect<AddSub>  ast("cmp_eq")
+        '!=' _ Expect<AddSub>  ast("cmp_neq")
+        '<=' _ Expect<AddSub>  ast("cmp_lteq")
+        '>=' _ Expect<AddSub>  ast("cmp_gteq")
+        '<' _ Expect<AddSub>  ast("cmp_lt")
+        '>' _ Expect<AddSub>  ast("cmp_gt")
+    }+  ast("comparison")
+    AddSub
+}
+
+LogicalAnd : @{
+    LogicalAnd '&&' _ Expect<Comparison>  ast("op_logical_and")
+    Comparison
+}
+
+LogicalOr : @{
+    LogicalOr '||' _ Expect<LogicalAnd>  ast("op_logical_or")
+    LogicalAnd
+}
+
+Expression : LogicalOr
+
+ExpressionList : @{
+    Expression (',' _ Expression)+ (',' _)?  ast("list")
+    Expression? (',' _)  ast("list")
+    Expression
+}
+
+# Assignments
+
+Assignment : @<Source> mode = "hold" {
+    Lvalue _ '+=' _ Expect<Self>  ast("assign_add_" + mode)
+    Lvalue _ '-=' _ Expect<Self>  ast("assign_sub_" + mode)
+    Lvalue _ '*=' _ Expect<Self>  ast("assign_mul_" + mode)
+    Lvalue _ '/=' _ Expect<Self>  ast("assign_div_" + mode)
+    Lvalue _ '//=' _ Expect<Self>  ast("assign_divi_" + mode)
+    Lvalue _ '%=' _ Expect<Self>  ast("assign_mod_" + mode)
+    Lvalue _ '=' Not<Char<\>=>> _ Expect<Self>  ast("assign_" + mode)
+    Source
+}
+
+# Blocks and Sequences
+
+Statement : @{
+    Keyword<'accept'> _ Expression?  ast("op_accept")
+    Keyword<'break'> _ Expression?  ast("op_break")
+    Keyword<'continue'> _ Expression?  ast("op_continue")
+    Keyword<'exit'> _ Expression?  ast("op_exit")
+    Keyword<'next'> _  ast("op_next")
+    Keyword<'push'> _ Expression?  ast("op_push")
+    Keyword<'reject'> _  ast("op_reject")
+    Keyword<'repeat'> _  ast("op_repeat")
+    Keyword<'reset'> _  ast("op_reset")
+    Keyword<'return'> _ Expression?  ast("op_accept")
+    Assignment<ExpressionList>("drop")
+}
+
+Block : @ emit = "block" {
+    '{' _ ___ '}'  ast("value_void")
+    '{' _ Tokay* _ Expect<'}'>   ast(emit)
+}
+
+SequenceItem : @{
+    T_Alias _ '=>' _ Expect<ExpressionList>  ast("alias")
+    Expression '=>' _ Expect<ExpressionList>  ast("alias")
+    Statement
+}
+
+Sequence : @{
+    SequenceItem+  if type($1) == "list" && $1.len > 1 || $1["emit"] == "alias" ast("sequence")
+}
+
+Sequences : @{
+    Sequence ('|' _ Expect<Sequence>)+  ast("block")
+    Sequence
+}
+
+# Main
+
+Tokay : @{
+    T_EOL
+    Keyword<'begin'> _ Expect<Sequences> Expect<T_EOL>  ast("begin")
+    Keyword<'end'> _ Expect<Sequences> Expect<T_EOL>  ast("end")
+    T_Identifier _ ':' _ {
+        Literal _ Peek<T_EOL>
+        Token _ Peek<T_EOL>
+        Sequences
+    } Expect<T_EOL>  ast("constant")
+    Sequences T_EOL?
+}
+
+_ Tokay* Expect<EOF>  ast("main")
+#_ Tokay* Expect<EOF>  ast2rust(ast("main"))
+#_ Tokay* Expect<EOF>  ast_print(ast("main"))

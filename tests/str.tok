@@ -1,0 +1,34 @@
+#testmode:repl
+str(true)
+str(12.34)
+str("Kestrel")
+
+s = "Glas"
+
+s + "vogel"
+s += "flügel"
+s
+s * 2
+3 * s
+
+# fixme: Missing tests for comparison, see dict.tok
+
+# Standard get item test
+l = , for i in range(s.len) { l.push(s[i] + i) } l
+
+# Extended get item test
+m = , for i in range(-1, s.len + 1) { m.push(s[i] + s.get_item(i, "x") + i) } m
+
+#---
+#"true"
+#"12.34"
+#"Kestrel"
+
+#"Glasvogel"
+
+#"Glasflügel"
+#"GlasflügelGlasflügel"
+#"GlasflügelGlasflügelGlasflügel"
+
+#("G0", "l1", "a2", "s3", "f4", "l5", "ü6", "g7", "e8", "l9")
+#("ll-1", "GG0", "ll1", "aa2", "ss3", "ff4", "ll5", "üü6", "gg7", "ee8", "ll9", "x10")

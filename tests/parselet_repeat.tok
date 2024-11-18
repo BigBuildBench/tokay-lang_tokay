@@ -1,0 +1,12 @@
+P: @{
+    begin count = 0
+    'x' count++ repeat
+    end count
+}
+
+P
+
+#---
+#xaxxx
+#---
+#(1, 3)
